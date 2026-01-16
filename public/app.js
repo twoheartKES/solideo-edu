@@ -272,8 +272,45 @@ function updateGauge(gaugeId, valueId, percentage) {
     }
 }
 
+// 데이터 검증 함수
+function validateSystemInfo(data) {
+    if (!data || typeof data !== 'object') {
+        console.error('Invalid system info: data is not an object');
+        return false;
+    }
+
+    // 필수 필드 확인
+    const requiredFields = ['cpu', 'memory', 'network', 'disk'];
+    for (const field of requiredFields) {
+        if (!data[field]) {
+            console.error(`Invalid system info: missing ${field}`);
+            return false;
+        }
+    }
+
+    // CPU 데이터 검증
+    if (typeof data.cpu.usage !== 'number' || isNaN(data.cpu.usage)) {
+        console.error('Invalid CPU usage data');
+        return false;
+    }
+
+    // 메모리 데이터 검증
+    if (typeof data.memory.usage !== 'number' || isNaN(data.memory.usage)) {
+        console.error('Invalid memory usage data');
+        return false;
+    }
+
+    return true;
+}
+
 // 시스템 정보 업데이트
 function updateSystemInfo(data) {
+    // 데이터 검증
+    if (!validateSystemInfo(data)) {
+        console.error('System info validation failed, skipping update');
+        return;
+    }
+
     const now = new Date();
     const timeLabel = formatTime(now);
 
@@ -723,28 +760,62 @@ function calculateStats(data) {
     };
 }
 
+// Socket 재연결 설정
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
+
 // Socket 이벤트 핸들러
 socket.on('connect', () => {
     console.log('Connected to server');
+    reconnectAttempts = 0;
     document.getElementById('connection-status').classList.add('connected');
     document.getElementById('connection-text').textContent = '연결됨';
 });
 
-socket.on('disconnect', () => {
-    console.log('Disconnected from server');
+socket.on('disconnect', (reason) => {
+    console.log('Disconnected from server:', reason);
     document.getElementById('connection-status').classList.remove('connected');
     document.getElementById('connection-text').textContent = '연결 끊김';
+});
+
+socket.on('connect_error', (error) => {
+    console.error('Connection error:', error);
+    reconnectAttempts++;
+
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        console.error('Max reconnection attempts reached');
+        document.getElementById('connection-text').textContent = '연결 실패';
+    } else {
+        document.getElementById('connection-text').textContent = `재연결 시도 중... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`;
+    }
+});
+
+socket.on('reconnect', (attemptNumber) => {
+    console.log('Reconnected after', attemptNumber, 'attempts');
+    reconnectAttempts = 0;
+    document.getElementById('connection-status').classList.add('connected');
+    document.getElementById('connection-text').textContent = '재연결됨';
 });
 
 socket.on('systemInfo', (data) => {
     updateSystemInfo(data);
 });
 
+socket.on('systemError', (error) => {
+    console.error('System error from server:', error);
+    // 사용자에게 에러 표시 (선택사항)
+    if (error.message) {
+        console.error('Server error:', error.message);
+    }
+});
+
 socket.on('monitoringComplete', (data) => {
     console.log('Monitoring complete:', data);
-    collectedData = data.data;
-    stopMonitoring();
-    alert('5분 모니터링이 완료되었습니다! PDF 저장 버튼을 클릭하여 리포트를 생성하세요.');
+    if (data && data.data) {
+        collectedData = data.data;
+        stopMonitoring();
+        alert('5분 모니터링이 완료되었습니다! PDF 저장 버튼을 클릭하여 리포트를 생성하세요.');
+    }
 });
 
 // 이벤트 리스너

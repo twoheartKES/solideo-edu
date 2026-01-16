@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -5,26 +6,37 @@ const si = require('systeminformation');
 const cors = require('cors');
 const path = require('path');
 
+// Constants
+const PORT = process.env.PORT || 3000;
+const MONITORING_DURATION_SECONDS = parseInt(process.env.MONITORING_DURATION_SECONDS) || 300;
+const UPDATE_INTERVAL_MS = parseInt(process.env.UPDATE_INTERVAL_MS) || 1000;
+const MAX_DATA_POINTS = parseInt(process.env.MAX_DATA_POINTS) || 300;
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',')
+  : ['http://localhost:3000'];
+
 const app = express();
 const server = http.createServer(app);
+
+// CORS 설정 강화
 const io = new Server(server, {
   cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
+    origin: ALLOWED_ORIGINS,
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
-const PORT = process.env.PORT || 3000;
-
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: ALLOWED_ORIGINS,
+  credentials: true
+}));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Store monitoring session data
-let monitoringData = [];
-let isMonitoring = false;
-let monitoringStartTime = null;
+// 세션별 모니터링 데이터 저장소
+const monitoringSessions = new Map();
 
 // Get system information
 async function getSystemInfo() {
@@ -107,8 +119,13 @@ async function getSystemInfo() {
 
     return systemInfo;
   } catch (error) {
-    console.error('Error getting system info:', error);
-    return null;
+    console.error('Error getting system info:', error.message);
+    // 에러 정보를 포함한 객체 반환
+    return {
+      error: true,
+      message: 'Failed to fetch system information',
+      timestamp: new Date().toISOString()
+    };
   }
 }
 
@@ -116,89 +133,141 @@ async function getSystemInfo() {
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
 
+  // 클라이언트별 세션 초기화
+  monitoringSessions.set(socket.id, {
+    isMonitoring: false,
+    data: [],
+    startTime: null
+  });
+
   // Send initial system info
   getSystemInfo().then(info => {
-    if (info) {
+    if (info && !info.error) {
       socket.emit('systemInfo', info);
+    } else if (info && info.error) {
+      socket.emit('systemError', { message: info.message });
     }
+  }).catch(err => {
+    console.error('Failed to get initial system info:', err);
+    socket.emit('systemError', { message: 'Failed to initialize system monitoring' });
   });
 
   // Handle start monitoring request
   socket.on('startMonitoring', () => {
-    if (!isMonitoring) {
-      isMonitoring = true;
-      monitoringData = [];
-      monitoringStartTime = Date.now();
-      console.log('Monitoring started');
-      io.emit('monitoringStarted', { startTime: monitoringStartTime });
+    const session = monitoringSessions.get(socket.id);
+    if (session && !session.isMonitoring) {
+      session.isMonitoring = true;
+      session.data = [];
+      session.startTime = Date.now();
+      console.log(`Monitoring started for client: ${socket.id}`);
+      socket.emit('monitoringStarted', { startTime: session.startTime });
     }
   });
 
   // Handle stop monitoring request
   socket.on('stopMonitoring', () => {
-    if (isMonitoring) {
-      isMonitoring = false;
-      console.log('Monitoring stopped. Data points collected:', monitoringData.length);
+    const session = monitoringSessions.get(socket.id);
+    if (session && session.isMonitoring) {
+      session.isMonitoring = false;
+      console.log(`Monitoring stopped for client: ${socket.id}. Data points: ${session.data.length}`);
       socket.emit('monitoringData', {
-        data: monitoringData,
-        startTime: monitoringStartTime,
+        data: session.data,
+        startTime: session.startTime,
         endTime: Date.now(),
-        dataPoints: monitoringData.length
+        dataPoints: session.data.length
       });
     }
   });
 
   // Handle get monitoring data request
   socket.on('getMonitoringData', () => {
-    socket.emit('monitoringData', {
-      data: monitoringData,
-      startTime: monitoringStartTime,
-      endTime: Date.now(),
-      dataPoints: monitoringData.length,
-      isMonitoring: isMonitoring
-    });
+    const session = monitoringSessions.get(socket.id);
+    if (session) {
+      socket.emit('monitoringData', {
+        data: session.data,
+        startTime: session.startTime,
+        endTime: Date.now(),
+        dataPoints: session.data.length,
+        isMonitoring: session.isMonitoring
+      });
+    }
   });
 
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
+    // 세션 데이터 정리
+    monitoringSessions.delete(socket.id);
   });
 });
 
 // Broadcast system info every second
 setInterval(async () => {
   const info = await getSystemInfo();
-  if (info) {
-    io.emit('systemInfo', info);
-    
-    // If monitoring is active, store the data
-    if (isMonitoring) {
-      monitoringData.push(info);
-      
-      // Check if 5 minutes (300 seconds) have passed
-      const elapsedTime = (Date.now() - monitoringStartTime) / 1000;
-      if (elapsedTime >= 300) {
-        isMonitoring = false;
-        console.log('5-minute monitoring complete. Data points:', monitoringData.length);
-        io.emit('monitoringComplete', {
-          data: monitoringData,
-          startTime: monitoringStartTime,
-          endTime: Date.now(),
-          dataPoints: monitoringData.length
-        });
-      }
-    }
-  }
-}, 1000);
 
-// API endpoint to get current monitoring data
-app.get('/api/monitoring-data', (req, res) => {
+  if (info && !info.error) {
+    io.emit('systemInfo', info);
+
+    // 각 클라이언트 세션별로 모니터링 데이터 저장
+    monitoringSessions.forEach((session, socketId) => {
+      if (session.isMonitoring) {
+        // 메모리 누수 방지: 최대 데이터 포인트 제한
+        if (session.data.length >= MAX_DATA_POINTS) {
+          session.data.shift(); // 가장 오래된 데이터 제거
+        }
+        session.data.push(info);
+
+        // 모니터링 시간 체크
+        const elapsedTime = (Date.now() - session.startTime) / 1000;
+        if (elapsedTime >= MONITORING_DURATION_SECONDS) {
+          session.isMonitoring = false;
+          console.log(`Monitoring complete for client: ${socketId}. Data points: ${session.data.length}`);
+
+          const socket = io.sockets.sockets.get(socketId);
+          if (socket) {
+            socket.emit('monitoringComplete', {
+              data: session.data,
+              startTime: session.startTime,
+              endTime: Date.now(),
+              dataPoints: session.data.length
+            });
+          }
+        }
+      }
+    });
+  } else if (info && info.error) {
+    io.emit('systemError', { message: info.message });
+  }
+}, UPDATE_INTERVAL_MS);
+
+// API endpoint to get health check
+app.get('/api/health', (req, res) => {
   res.json({
-    data: monitoringData,
-    startTime: monitoringStartTime,
-    endTime: isMonitoring ? null : Date.now(),
-    dataPoints: monitoringData.length,
-    isMonitoring: isMonitoring
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    activeSessions: monitoringSessions.size
   });
+});
+
+// API endpoint to get system info
+app.get('/api/system-info', async (req, res) => {
+  try {
+    const info = await getSystemInfo();
+    if (info && !info.error) {
+      res.json(info);
+    } else {
+      res.status(500).json({
+        error: 'Failed to retrieve system information',
+        message: info ? info.message : 'Unknown error'
+      });
+    }
+  } catch (error) {
+    console.error('API error:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
 });
 
 // Start server
