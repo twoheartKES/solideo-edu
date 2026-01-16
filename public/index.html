@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="실시간 시스템 리소스 모니터링 대시보드 - CPU, GPU, 메모리, 디스크, 네트워크 추적">
+  <title>🖥️ 시스템 리소스 모니터</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <div class="logo">
+          <span class="logo-icon">🖥️</span>
+          <h1>시스템 리소스 모니터</h1>
+        </div>
+        <div class="system-info">
+          <span id="os-info">Loading...</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="timer-container" id="timer-container">
+          <div class="timer-ring">
+            <svg viewBox="0 0 36 36">
+              <path class="timer-bg"
+                d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+              <path class="timer-progress" id="timer-progress"
+                stroke-dasharray="0, 100"
+                d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+            </svg>
+            <span class="timer-text" id="timer-text">05:00</span>
+          </div>
+        </div>
+        <button class="btn btn-primary" id="start-monitoring">
+          <span class="btn-icon">▶️</span>
+          <span>5분 모니터링</span>
+        </button>
+        <button class="btn btn-secondary" id="generate-pdf" disabled>
+          <span class="btn-icon">📄</span>
+          <span>PDF 저장</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Dashboard -->
+    <main class="dashboard">
+      <!-- Top Row - Key Metrics -->
+      <div class="metrics-grid">
+        <!-- CPU Card -->
+        <div class="metric-card" id="cpu-card">
+          <div class="card-header">
+            <span class="card-icon">💻</span>
+            <h2>CPU</h2>
+          </div>
+          <div class="card-body">
+            <div class="gauge-container">
+              <div class="gauge" id="cpu-gauge">
+                <div class="gauge-fill" id="cpu-gauge-fill"></div>
+                <div class="gauge-cover">
+                  <span class="gauge-value" id="cpu-value">0%</span>
+                </div>
+              </div>
+            </div>
+            <div class="metric-details">
+              <p id="cpu-model">Loading...</p>
+              <div class="metric-row">
+                <span>온도</span>
+                <span id="cpu-temp" class="temp-value">--°C</span>
+              </div>
+              <div class="metric-row">
+                <span>코어</span>
+                <span id="cpu-cores">--</span>
+              </div>
+            </div>
+          </div>
+          <div class="core-loads" id="core-loads"></div>
+        </div>
+
+        <!-- GPU Card -->
+        <div class="metric-card" id="gpu-card">
+          <div class="card-header">
+            <span class="card-icon">🎮</span>
+            <h2>GPU</h2>
+          </div>
+          <div class="card-body">
+            <div class="gauge-container">
+              <div class="gauge" id="gpu-gauge">
+                <div class="gauge-fill" id="gpu-gauge-fill"></div>
+                <div class="gauge-cover">
+                  <span class="gauge-value" id="gpu-value">N/A</span>
+                </div>
+              </div>
+            </div>
+            <div class="metric-details">
+              <p id="gpu-model">Loading...</p>
+              <div class="metric-row">
+                <span>온도</span>
+                <span id="gpu-temp" class="temp-value">--°C</span>
+              </div>
+              <div class="metric-row">
+                <span>VRAM</span>
+                <span id="gpu-vram">--</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Temperature Card -->
+        <div class="metric-card temperature-card" id="temp-card">
+          <div class="card-header">
+            <span class="card-icon">🌡️</span>
+            <h2>온도</h2>
+          </div>
+          <div class="card-body temp-body">
+            <div class="thermometer">
+              <div class="thermometer-bar">
+                <div class="thermometer-fill" id="cpu-temp-fill"></div>
+                <div class="thermometer-markers">
+                  <span>100°</span>
+                  <span>75°</span>
+                  <span>50°</span>
+                  <span>25°</span>
+                  <span>0°</span>
+                </div>
+              </div>
+              <div class="thermometer-label">CPU</div>
+              <div class="thermometer-value" id="cpu-temp-display">--°C</div>
+            </div>
+            <div class="thermometer">
+              <div class="thermometer-bar">
+                <div class="thermometer-fill" id="gpu-temp-fill"></div>
+                <div class="thermometer-markers">
+                  <span>100°</span>
+                  <span>75°</span>
+                  <span>50°</span>
+                  <span>25°</span>
+                  <span>0°</span>
+                </div>
+              </div>
+              <div class="thermometer-label">GPU</div>
+              <div class="thermometer-value" id="gpu-temp-display">--°C</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Second Row - Memory & Disk -->
+      <div class="storage-grid">
+        <!-- Memory Card -->
+        <div class="metric-card memory-card" id="memory-card">
+          <div class="card-header">
+            <span class="card-icon">💾</span>
+            <h2>메모리 (RAM)</h2>
+          </div>
+          <div class="card-body">
+            <div class="memory-bar-container">
+              <div class="memory-bar">
+                <div class="memory-bar-fill" id="memory-bar-fill"></div>
+              </div>
+              <div class="memory-labels">
+                <span id="memory-used">0 GB</span>
+                <span id="memory-total">/ 0 GB</span>
+              </div>
+            </div>
+            <div class="memory-stats">
+              <div class="stat-item">
+                <span class="stat-label">사용률</span>
+                <span class="stat-value" id="memory-percent">0%</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">가용</span>
+                <span class="stat-value" id="memory-free">0 GB</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">활성</span>
+                <span class="stat-value" id="memory-active">0 GB</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Disk Card -->
+        <div class="metric-card disk-card" id="disk-card">
+          <div class="card-header">
+            <span class="card-icon">💿</span>
+            <h2>디스크</h2>
+          </div>
+          <div class="card-body">
+            <div class="disk-charts" id="disk-charts">
+              <!-- Disk charts will be inserted here -->
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Third Row - Network -->
+      <div class="network-section">
+        <div class="metric-card network-card" id="network-card">
+          <div class="card-header">
+            <span class="card-icon">🌐</span>
+            <h2>네트워크</h2>
+            <div class="network-speeds">
+              <span class="speed download">
+                <span class="speed-icon">⬇️</span>
+                <span id="download-speed">0 KB/s</span>
+              </span>
+              <span class="speed upload">
+                <span class="speed-icon">⬆️</span>
+                <span id="upload-speed">0 KB/s</span>
+              </span>
+            </div>
+          </div>
+          <div class="card-body">
+            <canvas id="network-chart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Fourth Row - Combined Chart -->
+      <div class="chart-section">
+        <div class="metric-card chart-card" id="main-chart-card">
+          <div class="card-header">
+            <span class="card-icon">📊</span>
+            <h2>실시간 모니터링</h2>
+            <div class="chart-legend">
+              <span class="legend-item cpu-legend">● CPU</span>
+              <span class="legend-item memory-legend">● 메모리</span>
+              <span class="legend-item gpu-legend">● GPU</span>
+            </div>
+          </div>
+          <div class="card-body">
+            <canvas id="main-chart"></canvas>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Status Bar -->
+    <footer class="status-bar">
+      <div class="status-item">
+        <span class="status-dot connected" id="connection-status"></span>
+        <span id="connection-text">연결됨</span>
+      </div>
+      <div class="status-item">
+        <span>마지막 업데이트: </span>
+        <span id="last-update">--</span>
+      </div>
+      <div class="status-item" id="monitoring-status" style="display: none;">
+        <span class="pulse-dot"></span>
+        <span>모니터링 중...</span>
+        <span id="data-points">0 포인트</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- PDF Report Container (Hidden) -->
+  <div id="pdf-report" class="pdf-report" style="display: none;">
+    <div class="pdf-header">
+      <h1>🖥️ 시스템 리소스 모니터링 리포트</h1>
+      <p id="pdf-date-range"></p>
+    </div>
+    <div class="pdf-summary" id="pdf-summary"></div>
+    <div class="pdf-charts" id="pdf-charts"></div>
+    <div class="pdf-tables" id="pdf-tables"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
